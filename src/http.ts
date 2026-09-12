@@ -186,8 +186,23 @@ async function newStreamableTransport(): Promise<StreamableHTTPServerTransport> 
 /* 日志                                                                */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 日志时间戳用**本地时间**并带上时区偏移。
+ *
+ * 不要用 toISOString()：那是 UTC。在 journald 下每行已经有本地时间前缀，
+ * 应用再打一个 UTC 时间会出现「同一行两个时间、相差若干小时甚至跨日」，
+ * 排查时极易误判。带偏移则无论看 journald 还是 serve.log 都无歧义。
+ */
 function ts(): string {
-  return new Date().toISOString().replace("T", " ").slice(0, 19);
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const offMin = -d.getTimezoneOffset();
+  const sign = offMin >= 0 ? "+" : "-";
+  const off = `${sign}${p(Math.floor(Math.abs(offMin) / 60))}:${p(Math.abs(offMin) % 60)}`;
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${off}`
+  );
 }
 
 function log(msg: string): void {
