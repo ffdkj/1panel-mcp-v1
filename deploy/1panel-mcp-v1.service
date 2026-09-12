@@ -6,14 +6,17 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=nayun
-Group=nayun
-WorkingDirectory=/home/nayun/dsh/插件/1panel-mcp-v1
+
+# __USER__ / __INSTALL_DIR__ 是占位符，安装前必须替换为本机实际值。
+# README「长期常驻（systemd）」一节给了自动替换的安装命令。
+User=__USER__
+Group=__USER__
+WorkingDirectory=__INSTALL_DIR__
 
 # 密钥与监听地址都在这里（该文件已被 .gitignore 排除）
-EnvironmentFile=/home/nayun/dsh/插件/1panel-mcp-v1/.env.local
+EnvironmentFile=__INSTALL_DIR__/.env.local
 
-ExecStart=/usr/bin/node /home/nayun/dsh/插件/1panel-mcp-v1/dist/http.js
+ExecStart=/usr/bin/node __INSTALL_DIR__/dist/http.js
 Restart=on-failure
 RestartSec=5
 

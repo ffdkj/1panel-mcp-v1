@@ -62,10 +62,10 @@ serve 选项:
   export ONEPANEL_API_KEY=your-api-key
   1panel-mcp-v1 start --host 127.0.0.1 --port 36437
 
-  # 监听 Tailscale 虚拟地址，供组网内其它设备访问
+  # 监听 Tailscale 虚拟地址，供组网内其它设备访问（tailscale ip -4 查看本机地址）
   export MCP_TOKEN=your-api-key          # 同时用作面板 API 密钥
   export ONEPANEL_HOST=127.0.0.1 ONEPANEL_PORT=36437
-  1panel-mcp-v1 serve --bind 100.109.194.40 --mcp-port 8790
+  1panel-mcp-v1 serve --bind "$(tailscale ip -4)" --mcp-port 8790
 
 获取 API 密钥:
   登录 1Panel → 面板设置 → API 接口 → 启用并生成密钥
@@ -125,7 +125,7 @@ MCP 客户端配置示例（远程 HTTP，支持 Streamable HTTP 的客户端）
   "mcpServers": {
     "1panel": {
       "type": "http",
-      "url": "http://100.109.194.40:8790/mcp",
+      "url": "http://100.x.y.z:8790/mcp",
       "headers": { "Authorization": "Bearer your-mcp-token" }
     }
   }
@@ -199,6 +199,12 @@ function runEntry(entry: string, env: NodeJS.ProcessEnv): void {
 
 async function main() {
   const { command, opts } = parseArgs(process.argv);
+
+  // --help 优先于其它动作，否则 `start --help` 会真的去启动服务
+  if (opts.help) {
+    printHelp();
+    return;
+  }
 
   if (opts.version) {
     console.log(VERSION);

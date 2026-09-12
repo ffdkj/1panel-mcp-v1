@@ -12,7 +12,7 @@
  *   7. 关闭会话
  *
  * 用法：
- *   MCP_TOKEN=xxx MCP_HOST=100.109.194.40 MCP_PORT=8790 node scripts/http-test.mjs
+ *   MCP_TOKEN=xxx MCP_HOST=100.x.y.z MCP_PORT=8790 node scripts/http-test.mjs
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";

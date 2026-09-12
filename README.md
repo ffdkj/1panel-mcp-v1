@@ -129,14 +129,18 @@ node dist/http.js                    # 默认监听 127.0.0.1:8790
 
 ```bash
 # 监听 Tailscale 虚拟地址，组网内的设备都能访问
-MCP_HOST=100.109.194.40 MCP_PORT=8790 node dist/http.js
+# （tailscale ip -4 会输出本机的 100.x.y.z 地址）
+MCP_HOST=$(tailscale ip -4) MCP_PORT=8790 node dist/http.js
 
 # 或用 CLI / 启动脚本
-npx 1panel-mcp-v1 serve --bind 100.109.194.40 --mcp-port 8790
+npx 1panel-mcp-v1 serve --bind "$(tailscale ip -4)" --mcp-port 8790
 scripts/serve.sh                     # 读取 .env.local
 scripts/serve.sh --daemon            # 后台运行（serve.log / serve.pid）
 scripts/serve.sh --status | --stop
 ```
+
+把 `MCP_HOST` 写进 `.env.local` 时填你自己 `tailscale ip -4` 的输出；也可以填 `0.0.0.0`
+监听全部网卡（那样局域网也能访问，请自行确认网络环境可信）。
 
 端点：
 
@@ -156,10 +160,15 @@ scripts/serve.sh --status | --stop
 ### 5. 长期常驻（systemd）
 
 `scripts/serve.sh --daemon` 适合手动后台运行；若要开机自启、崩溃自动重拉，
-用仓库里的单元模板：
+用仓库里的单元模板。模板中的 `__USER__` / `__INSTALL_DIR__` 是占位符，
+下面的命令会在安装时替换成本机实际值：
 
 ```bash
-sudo cp deploy/1panel-mcp-v1.service /etc/systemd/system/
+# 在仓库根目录执行
+sed -e "s|__INSTALL_DIR__|$PWD|g" -e "s|__USER__|$(id -un)|g" \
+    deploy/1panel-mcp-v1.service \
+  | sudo tee /etc/systemd/system/1panel-mcp-v1.service >/dev/null
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now 1panel-mcp-v1
 
@@ -167,8 +176,8 @@ systemctl status 1panel-mcp-v1
 journalctl -u 1panel-mcp-v1 -f
 ```
 
-单元文件通过 `EnvironmentFile=` 读取 `.env.local`，其中的路径与 `User=` 是按本机写的，
-换机器时记得同步修改。
+单元文件通过 `EnvironmentFile=` 读取 `<安装目录>/.env.local`，安装前请先按
+`.env.example` 建好该文件。
 
 ### 环境变量
 
@@ -232,7 +241,7 @@ journalctl -u 1panel-mcp-v1 -f
   "mcpServers": {
     "1panel-v1": {
       "type": "http",
-      "url": "http://100.109.194.40:8790/mcp",
+      "url": "http://100.x.y.z:8790/mcp",
       "headers": { "Authorization": "Bearer your-mcp-token" }
     }
   }
@@ -246,7 +255,7 @@ journalctl -u 1panel-mcp-v1 -f
   "mcpServers": {
     "1panel-v1": {
       "type": "sse",
-      "url": "http://100.109.194.40:8790/sse",
+      "url": "http://100.x.y.z:8790/sse",
       "headers": { "Authorization": "Bearer your-mcp-token" }
     }
   }
@@ -256,7 +265,7 @@ journalctl -u 1panel-mcp-v1 -f
 验证服务是否可达（不需要令牌）：
 
 ```bash
-curl http://100.109.194.40:8790/health
+curl http://100.x.y.z:8790/health
 # {"status":"ok","name":"1panel-mcp","version":"1.0.0","transport":"http"}
 ```
 
