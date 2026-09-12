@@ -1,0 +1,35 @@
+[Unit]
+Description=1panel-mcp-v1 — 1Panel V1 的 MCP Server（HTTP 传输）
+Documentation=https://github.com/ffdkj/1panel-mcp-v1
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nayun
+Group=nayun
+WorkingDirectory=/home/nayun/dsh/插件/1panel-mcp-v1
+
+# 密钥与监听地址都在这里（该文件已被 .gitignore 排除）
+EnvironmentFile=/home/nayun/dsh/插件/1panel-mcp-v1/.env.local
+
+ExecStart=/usr/bin/node /home/nayun/dsh/插件/1panel-mcp-v1/dist/http.js
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=1panel-mcp-v1
+
+# 加固：服务只需读取自身目录并访问本地面板端口，不需要写文件系统
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

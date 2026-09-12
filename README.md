@@ -110,14 +110,81 @@ node dist/index.js                # 作为 MCP server 运行（stdio）
 npx 1panel-mcp-v1 start --host 127.0.0.1 --port 36437 --key your-api-key
 ```
 
+### 4. HTTP 传输（远程 / 组网访问）
+
+stdio 适合本机客户端拉起；要让**其它设备**（另一台电脑、平板、手机、容器里的 Agent）
+用同一个 MCP，需要 HTTP 传输：
+
+```bash
+export MCP_TOKEN=your-api-key        # 同时用作面板 API 密钥 + HTTP 访问令牌
+export ONEPANEL_HOST=127.0.0.1
+export ONEPANEL_PORT=36437
+
+node dist/http.js                    # 默认监听 127.0.0.1:8790
+```
+
+只设 `MCP_TOKEN` 即可：未设置 `ONEPANEL_API_KEY` 时，它会自动作为面板 API 密钥使用。
+
+监听地址与端口：
+
+```bash
+# 监听 Tailscale 虚拟地址，组网内的设备都能访问
+MCP_HOST=100.109.194.40 MCP_PORT=8790 node dist/http.js
+
+# 或用 CLI / 启动脚本
+npx 1panel-mcp-v1 serve --bind 100.109.194.40 --mcp-port 8790
+scripts/serve.sh                     # 读取 .env.local
+scripts/serve.sh --daemon            # 后台运行（serve.log / serve.pid）
+scripts/serve.sh --status | --stop
+```
+
+端点：
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/mcp` | POST / GET / DELETE | Streamable HTTP（推荐） |
+| `/sse` + `/messages` | GET / POST | 旧版 HTTP+SSE 传输（兼容老客户端） |
+| `/health` | GET | 存活探测，**无需鉴权**，不泄漏面板信息 |
+
+**安全约定：** 除 `/health` 外所有端点都要求令牌，通过
+`Authorization: Bearer <MCP_TOKEN>` 或 `X-MCP-Token: <MCP_TOKEN>` 携带。
+`MCP_HOST` 为非回环地址且未设置 `MCP_TOKEN` 时，服务会**拒绝启动** ——
+它持有面板管理员密钥，裸奔在网络上等于把面板交出去。
+绑定到具体地址（而不是 `0.0.0.0`）可确保只有该网卡可达，例如绑定 Tailscale 地址后
+局域网 IP 无法访问。
+
+### 5. 长期常驻（systemd）
+
+`scripts/serve.sh --daemon` 适合手动后台运行；若要开机自启、崩溃自动重拉，
+用仓库里的单元模板：
+
+```bash
+sudo cp deploy/1panel-mcp-v1.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now 1panel-mcp-v1
+
+systemctl status 1panel-mcp-v1
+journalctl -u 1panel-mcp-v1 -f
+```
+
+单元文件通过 `EnvironmentFile=` 读取 `.env.local`，其中的路径与 `User=` 是按本机写的，
+换机器时记得同步修改。
+
 ### 环境变量
 
 | 变量 | 说明 | 默认 |
 |---|---|---|
 | `ONEPANEL_HOST` | 1Panel 地址 | `localhost` |
 | `ONEPANEL_PORT` | 1Panel 端口 | `8080` |
-| `ONEPANEL_API_KEY` | API 密钥（必填） | — |
+| `ONEPANEL_API_KEY` | 面板 API 密钥（未设置时回退到 `MCP_TOKEN`） | — |
 | `ONEPANEL_PROTOCOL` | `http` 或 `https` | `http` |
+| `MCP_TOKEN` | HTTP 访问令牌；也用作面板密钥回退 | — |
+| `MCP_HOST` | HTTP 监听地址（`serve`） | `127.0.0.1` |
+| `MCP_PORT` | HTTP 监听端口（`serve`） | `8790` |
+| `MCP_PATH` | Streamable HTTP 路径 | `/mcp` |
+| `MCP_MAX_BODY` | 请求体上限（字节） | `33554432` |
+
+配置示例见 `.env.example`。
 
 ---
 
@@ -154,6 +221,43 @@ npx 1panel-mcp-v1 start --host 127.0.0.1 --port 36437 --key your-api-key
     }
   }
 }
+```
+
+### 远程 / 组网 HTTP 客户端
+
+支持 Streamable HTTP 的客户端（Claude Code、Cline、以及多数新版 Agent 框架）：
+
+```json
+{
+  "mcpServers": {
+    "1panel-v1": {
+      "type": "http",
+      "url": "http://100.109.194.40:8790/mcp",
+      "headers": { "Authorization": "Bearer your-mcp-token" }
+    }
+  }
+}
+```
+
+只支持旧版 SSE 的客户端：
+
+```json
+{
+  "mcpServers": {
+    "1panel-v1": {
+      "type": "sse",
+      "url": "http://100.109.194.40:8790/sse",
+      "headers": { "Authorization": "Bearer your-mcp-token" }
+    }
+  }
+}
+```
+
+验证服务是否可达（不需要令牌）：
+
+```bash
+curl http://100.109.194.40:8790/health
+# {"status":"ok","name":"1panel-mcp","version":"1.0.0","transport":"http"}
 ```
 
 ---
@@ -205,26 +309,36 @@ npx 1panel-mcp-v1 start --host 127.0.0.1 --port 36437 --key your-api-key
 ## 开发
 
 ```bash
-npm run build     # 编译到 dist/
-npm run dev       # 监听模式
-npm start         # 直接运行 dist/index.js
-npm run smoke     # 端到端冒烟：真实调用面板的只读接口
+npm run build      # 编译到 dist/
+npm run dev        # 监听模式
+npm start          # stdio 模式（dist/index.js）
+npm run serve      # HTTP 模式（dist/http.js）
+npm run smoke      # 端到端冒烟：真实调用面板的只读接口（stdio）
+npm run smoke:http # HTTP 传输测试：鉴权 / 会话 / 真实工具调用
 ```
 
 `npm run smoke` 需要先配好 `ONEPANEL_*` 环境变量，它只会调用 `list_*` / `get_*` / `search_*`
 这类只读工具，不会修改面板状态；输出会区分「通过」「环境所致报错」「v1 主动抛错」三类。
 
+`npm run smoke:http` 需要 `MCP_TOKEN`（以及 `MCP_HOST` / `MCP_PORT`），覆盖 15 项检查：
+无令牌/错误令牌/缺 `Bearer` 前缀均返回 401、伪 session id 返回 404、正确令牌下完成
+`initialize` → `tools/list`（257 个）→ 真实只读工具调用。
+
 项目结构：
 
 ```
 src/
-├── index.ts        # MCP server 入口（工具注册与分发）
+├── index.ts        # stdio 入口
+├── http.ts         # HTTP 入口（Streamable HTTP + 旧版 SSE + 令牌鉴权）
+├── mcp-server.ts   # MCP Server 工厂（工具注册与分发，两种传输共用）
 ├── client.ts       # OnePanelClient（聚合各 API 模块）
-├── cli.ts          # 命令行入口
+├── cli.ts          # 命令行入口（start / serve / config / tools）
 ├── api/            # 按模块划分的 API 封装（每个文件对应一类资源）
 │   ├── base.ts     # 请求层：鉴权签名、错误处理
 │   └── ...
 └── tools/          # MCP 工具定义（name / description / inputSchema）
+deploy/
+└── 1panel-mcp-v1.service  # systemd 单元模板（长期常驻）
 docs/
 └── v1-api-notes.md # 1Panel v1 API 的实测笔记（移植时踩过的坑都记在这里）
 ```

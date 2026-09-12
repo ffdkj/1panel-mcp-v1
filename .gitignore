@@ -10,3 +10,6 @@ dist/
 .probe.py
 probe*.py
 *.probe.*
+*.pid
+serve.log
+.env.local
