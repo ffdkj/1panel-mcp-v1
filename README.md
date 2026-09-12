@@ -157,6 +157,13 @@ scripts/serve.sh --status | --stop
 绑定到具体地址（而不是 `0.0.0.0`）可确保只有该网卡可达，例如绑定 Tailscale 地址后
 局域网 IP 无法访问。
 
+**客户端兼容性：** 本服务对两类常见的客户端问题做了兼容处理 ——
+
+- 部分客户端不发 `Accept` 头或只发 `application/json`（MCP 规范要求同时接受
+  `text/event-stream`，SDK 会因此回 406）。服务端会自动补全，不会握手失败。
+- OAuth 发现路径（`/.well-known/oauth-*`、`/register`）一律返回 **404** 而不是 401，
+  避免客户端误以为存在 OAuth 流程而陷入一连串无意义的探测。未知路径同样返回 404。
+
 ### 5. 长期常驻（systemd）
 
 `scripts/serve.sh --daemon` 适合手动后台运行；若要开机自启、崩溃自动重拉，
@@ -268,6 +275,44 @@ journalctl -u 1panel-mcp-v1 -f
 curl http://100.x.y.z:8790/health
 # {"status":"ok","name":"1panel-mcp","version":"1.0.0","transport":"http"}
 ```
+
+### OpenCode
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "1panel-v1": {
+      "type": "remote",
+      "url": "http://100.x.y.z:8790/mcp",
+      "oauth": false,
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer {env:MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+三个容易踩的坑：
+
+1. **`oauth` 必须显式设为 `false`。** 本服务用静态令牌，没有授权服务器。
+2. **`{env:VAR}` 在变量未设置时会替换成空字符串** —— 配置看起来完全正常，
+   但实际发出的是 `Authorization: Bearer `，结果是 401。用这种方式就必须确保
+   OpenCode 的进程环境里真的有这个变量。
+3. **不要照抄文档里的占位符。** OpenCode 官方示例写的是 `"Bearer MY_API_KEY"`，
+   照抄就会把字面量 `MY_API_KEY` 当成令牌发出去，同样 401。
+
+也可以直接写死令牌（本地配置、不外传的话最省事）：
+
+```json
+"headers": { "Authorization": "Bearer 你的实际令牌" }
+```
+
+排查：本服务会把每个请求和拒绝原因打进日志（`token 不匹配` / `未携带 token`）。
+若日志里出现 `/.well-known/oauth-*`、`/register` 的请求，说明客户端在走 OAuth 发现流程，
+即令牌没被正确发送 —— 本服务对这些路径回 404，明确表示不支持 OAuth。
 
 ---
 

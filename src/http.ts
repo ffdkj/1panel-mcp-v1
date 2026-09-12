@@ -101,8 +101,19 @@ function sendUnauthorized(req: IncomingMessage, res: ServerResponse): void {
   sendJson(
     res,
     401,
-    { jsonrpc: "2.0", error: { code: -32001, message: "Unauthorized: 缺少或错误的 MCP_TOKEN" }, id },
-    { "WWW-Authenticate": `Bearer realm="${SERVER_NAME}", error="invalid_token"` },
+    {
+      jsonrpc: "2.0",
+      error: {
+        code: -32001,
+        message:
+          "Unauthorized: 缺少或错误的 MCP_TOKEN。本服务使用静态 Bearer 令牌鉴权，" +
+          "请在客户端配置 Authorization: Bearer <MCP_TOKEN>（不支持 OAuth）。",
+      },
+      id,
+    },
+    // 不带 error="invalid_token"、更不带 resource_metadata：
+    // 这两个都会让客户端以为「存在 OAuth 授权服务器」从而发起发现流程。
+    { "WWW-Authenticate": `Bearer realm="${SERVER_NAME}"` },
   );
 }
 
@@ -190,6 +201,55 @@ function log(msg: string): void {
 const SSE_PATH = "/sse";
 const MESSAGES_PATH = "/messages";
 
+/**
+ * OAuth 发现 / 动态客户端注册路径。
+ *
+ * 本服务用静态 Bearer 令牌，没有授权服务器。这些路径必须回 404 而不是 401：
+ * 客户端收到 401 会认为「存在 OAuth 流程」，进而依次去探测这些地址，
+ * 最后一连串 401 掩盖掉真正的原因（令牌填错），排查时极具误导性。
+ */
+const OAUTH_DISCOVERY_PATHS = [
+  "/.well-known/oauth-protected-resource",
+  "/.well-known/oauth-authorization-server",
+  "/.well-known/openid-configuration",
+  "/register",
+];
+
+/**
+ * 按规范补全 Accept 头。
+ *
+ * MCP Streamable HTTP 要求客户端同时接受 application/json 与 text/event-stream，
+ * SDK 对此强校验，缺一个直接回 406。但现实中不少客户端只发 application/json，
+ * 或者干脆不发 Accept 头，于是握手在鉴权通过之后仍然失败。这里补全缺失的类型。
+ *
+ * 注意：必须改 rawHeaders。SDK 底层用 @hono/node-server 转换请求，而它是从
+ * `req.rawHeaders` 这个原始数组重建 Web Headers 的，改 `req.headers` 不生效。
+ */
+function normalizeAccept(req: IncomingMessage): void {
+  const raw = req.rawHeaders;
+  let idx = -1;
+  for (let i = 0; i < raw.length; i += 2) {
+    if (raw[i].toLowerCase() === "accept") {
+      idx = i + 1;
+      break;
+    }
+  }
+
+  const cur = idx >= 0 ? raw[idx] : "";
+  const missing: string[] = [];
+  if (!/application\/json/i.test(cur)) missing.push("application/json");
+  if (!/text\/event-stream/i.test(cur)) missing.push("text/event-stream");
+  if (missing.length === 0) return;
+
+  const merged = cur.trim() ? `${cur}, ${missing.join(", ")}` : missing.join(", ");
+  if (idx >= 0) raw[idx] = merged;
+  else raw.push("Accept", merged);
+
+  // 同步 headers 对象，避免两处读到的值不一致
+  req.headers["accept"] = merged;
+  log(`补全 Accept 头: "${cur.trim() || "(空)"}" → "${merged}"`);
+}
+
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const path = normalizePath(url.pathname);
@@ -208,7 +268,27 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return;
   }
 
-  // 鉴权
+  // OAuth 发现端点：明确回 404，阻断客户端的 OAuth 探测
+  if (OAUTH_DISCOVERY_PATHS.some((p) => path === p || path.startsWith(`${p}/`))) {
+    log(`拒绝 OAuth 发现请求 ${method} ${path}（本服务不支持 OAuth）`);
+    sendJson(res, 404, {
+      error: "not_found",
+      message:
+        "本服务使用静态 Bearer 令牌鉴权，不支持 OAuth / 动态客户端注册。" +
+        "请在客户端配置请求头 Authorization: Bearer <MCP_TOKEN>。",
+    });
+    return;
+  }
+
+  const isMcpEndpoint = path === MCP_PATH || path === SSE_PATH || path === MESSAGES_PATH;
+
+  // 未知路径先判 404：用 401 掩盖「端点不存在」会误导排查方向
+  if (!isMcpEndpoint) {
+    sendRpcError(res, 404, -32601, `未知端点: ${method} ${path}`);
+    return;
+  }
+
+  // 鉴权（只保护真实端点）
   if (MCP_TOKEN) {
     const provided = extractToken(req);
     if (!provided || !safeEqual(provided, MCP_TOKEN)) {
@@ -220,6 +300,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   /* ---------------- Streamable HTTP ---------------- */
   if (path === MCP_PATH) {
+    normalizeAccept(req);
     if (method === "POST") {
       const body = await readBody(req, MAX_BODY);
       const sidHeader = req.headers["mcp-session-id"];
@@ -263,6 +344,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   /* ---------------- 旧版 HTTP + SSE ---------------- */
   if (path === SSE_PATH && method === "GET") {
+    normalizeAccept(req);
     const transport = new SSEServerTransport(MESSAGES_PATH, res);
     sseSessions.set(transport.sessionId, transport);
     log(`SSE 会话建立 ${transport.sessionId}（当前 ${sseSessions.size} 个）`);
