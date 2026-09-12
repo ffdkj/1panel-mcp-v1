@@ -1,38 +1,66 @@
 [Unit]
 Description=1panel-mcp-v1 — 1Panel V1 的 MCP Server（HTTP 传输）
 Documentation=https://github.com/ffdkj/1panel-mcp-v1
-After=network-online.target
-Wants=network-online.target
+
+# Tailscale 起来之后再启动：本服务默认绑定 Tailscale 虚拟地址，
+# 地址不存在时 listen() 会返回 EADDRNOTAVAIL。配合 Restart 会自动重试，
+# 但 After/Wants 能避免开机时那段无谓的失败重试。
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+
+# 允许在等待网络/Tailscale 期间多试几次而不被 systemd 判定为「反复失败」
+StartLimitIntervalSec=300
+StartLimitBurst=30
 
 [Service]
 Type=simple
 
-# __USER__ / __INSTALL_DIR__ 是占位符，安装前必须替换为本机实际值。
-# README「长期常驻（systemd）」一节给了自动替换的安装命令。
+# __USER__ / __INSTALL_DIR__ 是占位符，请勿手工替换 ——
+# 用 deploy/install-systemd.sh 安装，脚本会填入本机实际值。
 User=__USER__
 Group=__USER__
 WorkingDirectory=__INSTALL_DIR__
 
-# 密钥与监听地址都在这里（该文件已被 .gitignore 排除）
+# 密钥与监听地址都在这里（该文件已被 .gitignore 排除，权限 600）
 EnvironmentFile=__INSTALL_DIR__/.env.local
 
 ExecStart=/usr/bin/node __INSTALL_DIR__/dist/http.js
+
+# 崩溃 / 异常退出自动重启；主动 stop 不会触发重启
 Restart=on-failure
 RestartSec=5
 
+# 优雅停止：HTTP 入口监听 SIGTERM 后会关闭所有 MCP 会话再退出
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# 日志进 journald：journalctl -u 1panel-mcp-v1 -f
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=1panel-mcp-v1
 
-# 加固：服务只需读取自身目录并访问本地面板端口，不需要写文件系统
+# ── 资源限制 ────────────────────────────────────────────────────────────
+# 正常占用约 60–90 MB（257 个工具常驻内存）。上限留足余量以容纳
+# 大请求体（MCP_MAX_BODY 默认 32 MiB），同时防止异常情况下吃满宿主。
+MemoryHigh=512M
+MemoryMax=1G
+CPUQuota=200%
+TasksMax=128
+
+# ── 加固 ────────────────────────────────────────────────────────────────
+# 服务只需：读取自身目录、访问 127.0.0.1 的面板端口。不需要任何特权。
 NoNewPrivileges=true
-PrivateTmp=true
+CapabilityBoundingSet=
 ProtectSystem=strict
 ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectClock=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

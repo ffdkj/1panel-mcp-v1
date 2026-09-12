@@ -166,25 +166,50 @@ scripts/serve.sh --status | --stop
 
 ### 5. 长期常驻（systemd）
 
-`scripts/serve.sh --daemon` 适合手动后台运行；若要开机自启、崩溃自动重拉，
-用仓库里的单元模板。模板中的 `__USER__` / `__INSTALL_DIR__` 是占位符，
-下面的命令会在安装时替换成本机实际值：
+`scripts/serve.sh --daemon` 适合手动后台运行；要长期常驻（开机自启、崩溃自动重启、
+日志进 journald、资源限制、`systemctl` 统一管理），用 systemd：
 
 ```bash
-# 在仓库根目录执行
-sed -e "s|__INSTALL_DIR__|$PWD|g" -e "s|__USER__|$(id -un)|g" \
-    deploy/1panel-mcp-v1.service \
-  | sudo tee /etc/systemd/system/1panel-mcp-v1.service >/dev/null
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now 1panel-mcp-v1
-
-systemctl status 1panel-mcp-v1
-journalctl -u 1panel-mcp-v1 -f
+cd /path/to/1panel-mcp-v1        # 仓库根目录
+sudo deploy/install-systemd.sh
 ```
 
-单元文件通过 `EnvironmentFile=` 读取 `<安装目录>/.env.local`，安装前请先按
-`.env.example` 建好该文件。
+一条命令搞定。脚本会依次：校验前置条件（`.env.local`、`dist/http.js`、node 路径）→
+把单元模板里的 `__USER__` / `__INSTALL_DIR__` 替换成本机实际值 →
+`systemd-analyze verify` 校验 → 释放监听端口（停掉手工启动的本服务实例，
+其它占用者会报错而不是被强杀）→ `daemon-reload` + `enable --now`。
+
+常用管理命令：
+
+```bash
+systemctl status 1panel-mcp-v1
+journalctl -u 1panel-mcp-v1 -f          # 日志（已进 journald）
+sudo systemctl restart 1panel-mcp-v1
+sudo deploy/install-systemd.sh --uninstall
+```
+
+安装前可以先干跑校验（无需 root，只生成到临时目录并 `systemd-analyze verify`）：
+
+```bash
+deploy/install-systemd.sh --dry-run
+```
+
+单元文件 [`deploy/1panel-mcp-v1.service`](deploy/1panel-mcp-v1.service) 里做了这些事：
+
+| 项 | 配置 |
+|---|---|
+| 开机自启 | `WantedBy=multi-user.target` + 脚本里的 `enable` |
+| 崩溃重启 | `Restart=on-failure` / `RestartSec=5` |
+| 日志 | `StandardOutput=journal`、`SyslogIdentifier=1panel-mcp-v1` |
+| 资源限制 | `MemoryHigh=512M`、`MemoryMax=1G`、`CPUQuota=200%`、`TasksMax=128` |
+| 优雅停止 | `KillSignal=SIGTERM`、`TimeoutStopSec=15`（HTTP 入口会先关掉所有会话） |
+| Tailscale | `After=` / `Wants=tailscaled.service`，避免开机时地址还没就绪 |
+| 重启频率 | `StartLimitIntervalSec=300` / `StartLimitBurst=30`，等待网络期间不会被判为反复失败 |
+| 加固 | `CapabilityBoundingSet=`（清空）、`ProtectSystem=strict`、`ProtectHome=read-only`、`PrivateTmp=`、`PrivateDevices=`、`NoNewPrivileges=` 等 |
+
+服务以安装目录的属主身份运行（`sudo` 安装时取 `$SUDO_USER`），因此能读到权限 600 的
+`.env.local`。注意监听地址若绑定 Tailscale 虚拟 IP，务必先用 `tailscale ip -4` 确认该地址，
+否则 `listen()` 会返回 `EADDRNOTAVAIL`（systemd 下会自动重试）。
 
 ### 环境变量
 
