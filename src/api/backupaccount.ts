@@ -121,18 +121,56 @@ export class BackupAccountAPI extends BaseAPI {
   }
 
   /**
-   * 检查备份账号
+   * 检查备份账号连通性
    *
-   * v2 的 POST /core/backups/check 在 v1 没有对应端点：
-   * v1 面板是在「创建/更新账号」时由服务端 checkBackupConn() 顺带校验连通性的；
-   * 前端还有一个"列出 buckets"的辅助接口 POST /settings/backup/buckets（dto.ForBuckets），
-   * 但该路径未登记在权威 swagger 里，按移植规约规则 1 这里不调用它，改为抛明确错误。
+   * v2 的 POST /core/backups/check 在 v1 不存在，但 v1 有语义等价的接口
+   * **POST /settings/backup/buckets**，这正是 v1 面板「检查」按钮背后的调用：
+   *
+   *   dto.ForBuckets{ Type, AccessKey, Credential, Vars }
+   *   → service.GetBuckets() 把 accessKey/secretKey（或 username/password）
+   *     合并进 vars，再用云存储客户端 ListBuckets()
+   *   → 能列出 bucket 就说明凭据可用，因此"列出 bucket"就是 v1 的连通性检查
+   *
+   * 关键细节（据 v1 `backend/app/api/v1/backup.go` + `app/service/backup.go`）：
+   *  - `Credential` 带 `validate:"required"`，**不接受空串**，且服务端会做 base64 解码
+   *    （空串能过 required 但会被当成有效值，实测传非 4 倍数长度的明文会报 illegal base64）。
+   *  - 各存储类型的凭据字段名：S3/OSS/MinIO/COS/Kodo → accessKey + secretKey；
+   *    SFTP/WebDAV → username + password。本方法会自动从 `vars` 里取这两个字段。
+   *  - LOCAL 类型没有 bucket 概念，v1 面板也不提供检查，故直接给出说明性错误。
+   *
+   * 该路径未登记在权威 swagger 里（swagger 把同一个 handler 错记成了
+   * POST /settings/backup/search，而那条注解的 summary 恰恰写着 "List buckets"，
+   * 自证是注解 bug）。此处以真机实测 + v1 源码为准。
    */
-  async check(params: { type: string; vars: Record<string, string> }): Promise<any> {
-    throw new Error(
-      `1Panel v1 不存在独立的备份账号检查接口（v2 的 POST /core/backups/check 为 v2 专有）: type=${params.type}。` +
-        `v1 是在创建/更新账号时由服务端 checkBackupConn() 顺带校验连通性的（LOCAL 类型跳过校验）。`,
-    );
+  async check(params: {
+    type: string;
+    vars: Record<string, string> | string;
+    accessKey?: string;
+    credential?: string;
+  }): Promise<any> {
+    const varObj: Record<string, string> =
+      typeof params.vars === "string" ? JSON.parse(params.vars || "{}") : { ...(params.vars ?? {}) };
+
+    // 凭据：优先用显式参数，其次从 vars 里按各存储类型的字段名取
+    const rawAccessKey = params.accessKey ?? varObj.accessKey ?? varObj.username ?? "";
+    const rawCredential = params.credential ?? varObj.secretKey ?? varObj.password ?? "";
+
+    if (!rawCredential) {
+      throw new Error(
+        `1Panel v1 的连通性检查需要提供凭据（服务端 Credential 为必填）: type=${params.type}。` +
+          `请在 vars 里带上 secretKey（S3/OSS/MinIO/COS/Kodo）或 password（SFTP/WebDAV），` +
+          `或显式传 credential 参数。LOCAL 类型没有 bucket 概念，v1 也不提供检查。`,
+      );
+    }
+
+    const b64 = (s: string) => Buffer.from(s, "utf-8").toString("base64");
+    return this.post("/api/v1/settings/backup/buckets", {
+      type: params.type,
+      // v1 的 vars 是 JSON 字符串（不是对象），创建/更新账号时同理
+      vars: JSON.stringify(varObj),
+      accessKey: b64(rawAccessKey),
+      credential: b64(rawCredential),
+    });
   }
 
   /**
